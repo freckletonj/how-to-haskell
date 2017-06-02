@@ -1,0 +1,28 @@
+* how-to-haskell
+
+* names
+
+instead of `how-to-haskell`
+
+- `the-hlibrary`
+
+** Interpreting scripts using `stack`
+
+needs at least stack version 1.2.1
+
+https://docs.haskellstack.org/en/stable/GUIDE/#script-interpreter
+
+** run
+
+`stack <file name>`
+
+
+** Errors
+
+*** Error: While constructing the build plan... no specified version
+
+Specify version of dependency, and the package you want
+
+#+BEGIN_SRC sh
+stack install dependency-0.1.2.3 packageyouwant-0.9.8.7
+#+END_SRC 
