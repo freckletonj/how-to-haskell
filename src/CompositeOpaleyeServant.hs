@@ -7,13 +7,13 @@ exec ghci
 --package composite-aeson
 --package text
 --package string-conversions
---package postgres-simple
+--package postgresql-simple
 --package vinyl
 --package servant
 --package servant-server
 --package warp
 --package bytestring
-
+--package natural-transformation
 -}
 
 {-# LANGUAGE
@@ -48,7 +48,7 @@ import Composite.Opaleye (defaultRecTable)
 import Composite.Record (Record, Rec(RNil), (:->), pattern (:*:))
 import Composite.TH (withOpticsAndProxies)
 import Control.Arrow (returnA)
-import Control.Lens (view, iso)
+import Control.Lens (view, iso, makeWrapped)
 import Control.Lens.Wrapped 
 --import Control.Lens.TH (makeWrapped)
 import Data.Int (Int64)
@@ -71,7 +71,10 @@ import qualified Data.Pool as Pool
 import qualified Database.PostgreSQL.Simple as PGS -- used for printSql
 
 -- | Web
-import Servant
+import Servant 
+--import Servant.Server
+import Control.Natural ((:~>)(NT))
+import Control.Natural 
 import Network.Wai.Handler.Warp (run)
 
 
@@ -116,6 +119,10 @@ withOpticsAndProxies [d|
   type CHashPassword = "hashpass" :-> Column PGText
   |]
 
+--------------------------------------------------
+-- The Stack
+--   Note: I had to move this here because TH stuff was goofing around
+
 data AppData = AppData { appConnPool :: Pool PGS.Connection }
 
 type AppStackM = ReaderT AppData Handler
@@ -144,17 +151,28 @@ withDb action = do
   pool <- asks appConnPool
   liftBase $ withResource pool action
 
+
 --------------------------------------------------
 -- | Other Records
 
 type User = '[FEmail, FAge]
+
+-- Create: newtype ApiUser = ApiUser {unApiUser :: Record User}
 makeRecJsonWrapper "ApiUser" ''User
---makeWrapped ''ApiUser
+
+
+makeWrapped ''ApiUser
 
 -- | Client-submitted credentials for Authentication
 type AuthUser = '[FEmail, FClearPassword]
+
+-- Create: newtype ApiAuthUser = ApiAuthUser {unApiAuthUser :: Record AuthUser}
 makeRecJsonWrapper "ApiAuthUser" ''AuthUser
---makeWrapped ''ApiAuthUser
+
+
+makeWrapped ''ApiAuthUser
+--
+
 
 --------------------------------------------------
 -- Query
@@ -203,29 +221,47 @@ validatePassword clear hash = (hashPassword clear) == hash
 --------------------------------------------------
 -- | Servant
 
+-- type Handler a = ExceptT ServantErr IO a
+-- type Server (api :: k) = ServerT api Handler
+-- serveWithContext :: HasServer api context
+--                     => Proxy api -> Context context -> Server api -> Application
+-- serve :: HasServer api '[] => Proxy api -> Server api -> Application
+-- newtype (:~>) (m :: * -> *) (n :: * -> *) = Nat {unNat :: forall a. m a -> n a}
+-- enter :: Servant.Utils.Enter.Enter typ arg ret => arg -> typ -> ret
+
 type LoginRoute = ReqBody '[JSON] ApiAuthUser
                   :> Post '[JSON] ApiUser
 
-loginRoute :: Record AuthUser -> Handler (Record User)
-loginRoute authUser = do
-  let email = view fEmail authUser
+loginRoute :: ApiAuthUser -> AppStackM ApiUser
+loginRoute =
+  --let email = view fEmail authUser
   --user <- return $ queryByEmail passwordTable email
   --let clearPassword = view fClearPassword authUser
   --    hash = view cHashPassword user
-  return undefinedXXX
+  return undefined
 
-type Api = LoginRoute
-
+type Api = "test" :> LoginRoute
+           -- :<|> "test2" :> LoginRoute
+  
 api :: Proxy Api
-api = Proxy
+api  = Proxy
 
 service :: ServerT Api AppStackM
-service = do
-  undefinedXXX
+service = loginRoute
+
   
+  -- (\authUser -> do
+  -- users <- withDb $ \ conn ->
+  --   runQuery conn $ proc () -> do
+  --     user <- queryByEmail userTable "hi" -< ()
+  --     restrict -< (view cEmail user) .=== (constant $ view fEmail authUser)
+  --     returnA -< user
+  -- return undefined
+  --   )
+
+
 --------------------------------------------------
 -- App Machinery
-
 
 withPostgresqlPool :: MonadBaseControl IO m
   => ByteString
@@ -244,23 +280,15 @@ startApp = do
   withPostgresqlPool "host=localhost port=5432 user=god dbname=vinyleye" 2
     $ \connPool -> do
       let appData = AppData connPool
-      liftIO . run 8080 $ serve api
-        $ enter (appStackToHandler appData) service
-    
+      run 8080 $ serve api (appServer appData)
+      -- liftIO . run 8080 $ serve api
+      --   $ enter (appStackToHandler appData) service
+
+appServer :: AppData -> Server Api
+appServer appData = enter (appStackToHandler appData) service
+      
 appStackToHandler' :: forall a. AppData -> AppStackM a -> Handler a
 appStackToHandler' appData action = runReaderT action appData
 
-appStackToHandler :: AppData -> (AppStackM :~> Handler)
+appStackToHandler :: AppData -> (AppStackM Servant.:~> Handler)
 appStackToHandler appData = Nat $ appStackToHandler' appData
-
--- ServerT (SecurityApi '[JWT, Cookie]) (ExceptT ServantErr IO)
-
--- Network.Wai.Handler.Warp.run 8080
---     $ serveWithContext mainApi serverCfg
---     $ mainServer
---     pool
---     defaultCookieSettings
---     jwtCfg
---     githuboa
---     bitbucketoa
-
