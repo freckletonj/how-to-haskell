@@ -1,10 +1,4 @@
-* how-to-haskell
-
-* names
-
-instead of `how-to-haskell`
-
-- `the-hlibrary`
+* How To Haskell
 
 ** Interpreting scripts using `stack`
 

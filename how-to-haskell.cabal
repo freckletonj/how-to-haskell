@@ -1,9 +1,8 @@
 name:                how-to-haskell
 version:             0.1.0.0
--- synopsis:
--- description:
+
 homepage:            https://github.com/githubuser/how-to-haskell#readme
-license:             BSD3
+license:             
 license-file:        LICENSE
 author:              Author name here
 maintainer:          example@example.com
