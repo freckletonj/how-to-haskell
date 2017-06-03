@@ -1,0 +1,15 @@
+# -*-restclient-*-
+#
+:host=http://localhost:8080
+
+#
+:h = <<
+Content-Type: application/json
+
+#
+POST :host
+:h
+{
+"email":"blah",
+"clearpass":"secret"
+}
