@@ -12,25 +12,20 @@ exec ghci
 --package composite-opaleye-0.4.1.0
 -}
 
-
-
-
-
-
 {-# LANGUAGE DataKinds #-} -- converts sum constructors to types
-{-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 
@@ -40,7 +35,7 @@ import Data.Vinyl.TypeLevel
 
 import qualified Data.Aeson as Aeson
 import Composite.Aeson (JsonFormat, defaultJsonFormatRec, recJsonFormat, toJsonWithFormat)
-import Composite.Record (Record, Rec(RNil), (:->), pattern (:*:))
+import Composite.Record -- (Record, Rec(RNil), (:->), pattern (:*:), recToJson)
 
 import Control.Applicative
 import Control.Lens hiding (Identity, rmap)
@@ -85,13 +80,10 @@ stack src/Vinyl.hs
   email :: Email
   <other traits that have been JOINed in?>
 
-
-
 -}
 
 --------------------------------------------------
 -- |
-
 
 data Fields = Email | Name | HashPass | ClearPass | Friend
   deriving Show
@@ -111,6 +103,7 @@ type family ElF (f :: Fields) :: * where
 newtype Attr f = Attr { _unAttr :: ElF f }
 makeLenses ''Attr
 
+
 --------------------------------------------------
 -- | Show
 
@@ -119,6 +112,7 @@ instance Show (Attr Name) where show (Attr x) = show x
 instance Show (Attr HashPass) where show (Attr x) = show x
 instance Show (Attr ClearPass) where show (Attr x) = show x -- TODO: don't show
 instance Show (Attr Friend) where show (Attr x) = show x
+
 
 --------------------------------------------------
 -- | Value setter
@@ -144,7 +138,6 @@ bryan = (SEmail =:: "bryan@nowhere.com")
 
 adamAppendFriend = adam <+> bryan -- weird
 adamsFriend = rget SFriend adam
-
 
 --------------------------------------------------
 -- | Validation
@@ -199,16 +192,12 @@ Nothing
 
 
 --------------------------------------------------
--- rmap
+-- Composite-Aeson
 
-type Mapper f = Lift (->) f f
+-- clientUserJson :: JsonFormat e (Rec ToField ClientUser)
+-- clientUserJson = undefined
 
-wowEmail :: Attr Email -> Attr Email
-wowEmail (Attr x) = Attr $ x ++ "!"
-
--- wowDbUser :: Rec ((->) (Rec Attr DbUser)) DbUser 
--- wowDbUser = undefined
-
-
--- rmapAdam = rmap wowDbUser adam
-
+a :: Rec Attr ClientUser
+a = (SEmail =:: "a")
+    :& (SName =:: "a")
+    :& (SFriend =:: Nothing)
