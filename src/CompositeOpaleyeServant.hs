@@ -13,7 +13,6 @@ exec ghci
 --package servant-server
 --package warp
 --package bytestring
---package natural-transformation
 -}
 
 {-# LANGUAGE
@@ -72,13 +71,9 @@ import qualified Database.PostgreSQL.Simple as PGS -- used for printSql
 
 -- | Web
 import Servant 
---import Servant.Server
-import Control.Natural ((:~>)(NT))
-import Control.Natural 
 import Network.Wai.Handler.Warp (run)
 
-
-
+import Debug.Trace (trace)
 
 
 --------------------------------------------------
@@ -102,30 +97,33 @@ import Network.Wai.Handler.Warp (run)
 -- | Newtype ClearPassword so it can't be passed around as ordinary Text
 newtype ClearPassword a = ClearPassword {unClearPassword :: a}
 
+-- Create instances for newtype
+makeWrapped ''ClearPassword
 instance DefaultJsonFormat a => DefaultJsonFormat (ClearPassword a) where
   defaultJsonFormat = wrappedJsonFormat defaultJsonFormat
-instance Wrapped (ClearPassword a) where
-  type Unwrapped (ClearPassword a) = a
-  _Wrapped' = iso unClearPassword ClearPassword
-  
+
 withOpticsAndProxies [d|
   type FEmail = "email" :-> Text
   type CEmail = "email" :-> Column PGText
 
-  type FAge = "age" :-> Text
-  type CAge = "age" :-> Column PGText
+  type FAge = "age" :-> (Maybe Int)
+  type CAge = "age" :-> Column (Nullable PGInt4)
 
   type FClearPassword = "clearpass" :-> ClearPassword Text
+  type FHashPassword = "hashpass" :-> Text
   type CHashPassword = "hashpass" :-> Column PGText
   |]
 
+
 --------------------------------------------------
--- The Stack
+-- The Apps Monad Stack
 --   Note: I had to move this here because TH stuff was goofing around
 
+-- | Lives in Reader, context for the whole app
 data AppData = AppData { appConnPool :: Pool PGS.Connection }
 
 type AppStackM = ReaderT AppData Handler
+
 
 --------------------------------------------------
 -- | Db Setup
@@ -135,13 +133,14 @@ printSql :: Default Unpackspec a a => Query a -> IO ()
 printSql = putStrLn . maybe "Empty query" id . showSqlForPostgres
 
 -- | Db Records
-type DbUser = '[CEmail, CAge]
-type DbPassword = '[CEmail, CHashPassword]
+type DbUserColumns = '[CEmail, CAge]
+type DbPasswordColumns = '[CEmail, CHashPassword]
+type DbPassword = '[FEmail, FHashPassword]
 
-userTable :: Table (Record DbUser) (Record DbUser)
-userTable = Table "user" defaultRecTable
+userTable :: Table (Record DbUserColumns) (Record DbUserColumns)
+userTable = Table "account" defaultRecTable
 
-passwordTable :: Table (Record DbPassword) (Record DbPassword)
+passwordTable :: Table (Record DbPasswordColumns) (Record DbPasswordColumns)
 passwordTable = Table "password" defaultRecTable
 
 withDb :: (MonadBaseControl IO m, MonadReader AppData m)
@@ -155,27 +154,26 @@ withDb action = do
 --------------------------------------------------
 -- | Other Records
 
-type User = '[FEmail, FAge]
+type Account = '[FEmail, FAge]
 
--- Create: newtype ApiUser = ApiUser {unApiUser :: Record User}
-makeRecJsonWrapper "ApiUser" ''User
+-- Create: newtype ApiAccount = ApiAccount {unApiAccount :: Record Account}
+makeRecJsonWrapper "ApiAccount" ''Account
 
-
-makeWrapped ''ApiUser
+-- 
+makeWrapped ''ApiAccount
 
 -- | Client-submitted credentials for Authentication
-type AuthUser = '[FEmail, FClearPassword]
+type AuthAccount = '[FEmail, FClearPassword]
 
--- Create: newtype ApiAuthUser = ApiAuthUser {unApiAuthUser :: Record AuthUser}
-makeRecJsonWrapper "ApiAuthUser" ''AuthUser
+-- Create: newtype ApiAuthAccount = ApiAuthAccount {unApiAuthAccount :: Record AuthAccount}
+makeRecJsonWrapper "ApiAuthAccount" ''AuthAccount
 
-
-makeWrapped ''ApiAuthUser
---
+-- 
+makeWrapped ''ApiAuthAccount
 
 
 --------------------------------------------------
--- Query
+-- General Query
 
 -- | A constraint for a record `rs` that has a field `f`
 -- TODO: generalize the getter & setter portions?
@@ -193,19 +191,7 @@ queryByEmail table email = proc () -> do
   
 
 --------------------------------------------------
--- Tests
-
--- SELECT <user cols> FROM "user" ...
-queryUserTest = printSql $ queryByEmail userTable "hi"
-
--- SELECT <password cols> FROM "password" ...
-queryPasswordTest = printSql $ queryByEmail passwordTable "hi"
-
-
-
-
---------------------------------------------------
--- | Hash
+-- | Security
 -- note: you probably want better security than this
 
 hashPassword :: ClearPassword Text -> Text
@@ -215,49 +201,53 @@ hashPassword _ = "hashOfNotSecret"
 validatePassword :: ClearPassword Text -> Text -> Bool
 validatePassword clear hash = (hashPassword clear) == hash
 
--- validatePassword (ClearPassword "secret") "garbledHash" == True
-
 
 --------------------------------------------------
 -- | Servant
 
--- type Handler a = ExceptT ServantErr IO a
--- type Server (api :: k) = ServerT api Handler
--- serveWithContext :: HasServer api context
---                     => Proxy api -> Context context -> Server api -> Application
--- serve :: HasServer api '[] => Proxy api -> Server api -> Application
--- newtype (:~>) (m :: * -> *) (n :: * -> *) = Nat {unNat :: forall a. m a -> n a}
--- enter :: Servant.Utils.Enter.Enter typ arg ret => arg -> typ -> ret
+type LoginRoute = ReqBody '[JSON] ApiAuthAccount
+                  :> Post '[JSON] ApiAccount
 
-type LoginRoute = ReqBody '[JSON] ApiAuthUser
-                  :> Post '[JSON] ApiUser
+-- TODO: refactor unsafe fns, return 403's instead
+-- TODO: refactor runQuery
+-- TODO: execute in Maybe monad
+loginRoute :: ApiAuthAccount -> AppStackM ApiAccount
+loginRoute apiAuthAccount = do
+  let authAccount = (unApiAuthAccount apiAuthAccount)
+      email = view fEmail authAccount
 
-loginRoute :: ApiAuthUser -> AppStackM ApiUser
-loginRoute =
-  --let email = view fEmail authUser
-  --user <- return $ queryByEmail passwordTable email
-  --let clearPassword = view fClearPassword authUser
-  --    hash = view cHashPassword user
-  return undefined
+  -- grab password to validate against
+  passwords <- withDb $ \conn ->
+    runQuery conn $ proc () -> do
+      ps <- queryByEmail passwordTable email -< ()
+      returnA -< ps
+  let _ = passwords :: [Record DbPassword] -- helps type system
 
-type Api = "test" :> LoginRoute
-           -- :<|> "test2" :> LoginRoute
+  -- validate provided credentials
+  let passwordEntity = head passwords -- TODO: head unsafe
+      clearPassword = view fClearPassword authAccount
+      hash = view fHashPassword passwordEntity
+      valid = validatePassword clearPassword hash
+      ret = case valid of
+        True -> do
+
+          -- return the appropriate user
+          users <- withDb $ \conn ->
+            runQuery conn $ proc () -> do
+              us <- queryByEmail userTable email -< ()
+              returnA -< us
+          let user = head users -- TODO: head unsafe
+          pure $ ApiAccount user
+        False -> throwError err403 
+  ret
+
+type Api = "login" :> LoginRoute
   
 api :: Proxy Api
 api  = Proxy
 
 service :: ServerT Api AppStackM
 service = loginRoute
-
-  
-  -- (\authUser -> do
-  -- users <- withDb $ \ conn ->
-  --   runQuery conn $ proc () -> do
-  --     user <- queryByEmail userTable "hi" -< ()
-  --     restrict -< (view cEmail user) .=== (constant $ view fEmail authUser)
-  --     returnA -< user
-  -- return undefined
-  --   )
 
 
 --------------------------------------------------
@@ -277,12 +267,10 @@ withPostgresqlPool connStr nConns action = do
 
 startApp :: IO ()
 startApp = do
-  withPostgresqlPool "host=localhost port=5432 user=god dbname=vinyleye" 2
+  withPostgresqlPool "host=localhost port=5432 user=god dbname=opaleyesandbox password=godpass" 2
     $ \connPool -> do
       let appData = AppData connPool
       run 8080 $ serve api (appServer appData)
-      -- liftIO . run 8080 $ serve api
-      --   $ enter (appStackToHandler appData) service
 
 appServer :: AppData -> Server Api
 appServer appData = enter (appStackToHandler appData) service
@@ -292,3 +280,44 @@ appStackToHandler' appData action = runReaderT action appData
 
 appStackToHandler :: AppData -> (AppStackM Servant.:~> Handler)
 appStackToHandler appData = Nat $ appStackToHandler' appData
+
+
+{-
+
+# SQL
+
+CREATE DATABASE opaleyesandbox;
+CREATE USER god;
+grant all privileges on database opaleyesandbox to god;
+
+CREATE TABLE account (
+  email Text PRIMARY KEY,
+  age Integer
+);
+
+ALTER TABLE account owner to god;
+
+CREATE TABLE password (
+  email Text PRIMARY KEY,
+  hashpass Text NOT NULL
+);
+
+ALTER TABLE password owner to god;
+
+INSERT INTO user (email, age) VALUES
+('a', 1);
+
+INSERT INTO password (email, hashpass) VALUES
+('a', 'garbledHash')
+
+--------------------------------------------------
+
+# Curl test
+
+curl -i -H 'Content-Type: application/json' -XPOST 'http://localhost:8080/login' -d '{
+"email":"a",
+"clearpass":"secret"
+}'
+
+
+-}

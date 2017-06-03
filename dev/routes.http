@@ -7,9 +7,9 @@
 Content-Type: application/json
 
 #
-POST :host
+POST :host/login
 :h
 {
-"email":"blah",
+"email":"a",
 "clearpass":"secret"
 }
