@@ -13,6 +13,8 @@ exec ghci
 --package servant-server
 --package warp
 --package bytestring
+--package monad-logger
+--package fast-logger
 -}
 
 {-# LANGUAGE
@@ -25,7 +27,6 @@ Arrows
 , FlexibleContexts
 , RankNTypes
 
-
 -- most of the following came into play when I wrote `RecWith`
 , ConstraintKinds
 , TypeSynonymInstances
@@ -35,45 +36,37 @@ Arrows
 , GeneralizedNewtypeDeriving
 #-}
 
-import Data.Vinyl (RElem)
-import Data.Functor.Identity (Identity)
-import Data.Vinyl.TypeLevel (RIndex)
-import Composite.Aeson (JsonFormat, defaultJsonFormatRec
-                       , recJsonFormat, toJsonWithFormat
-                       , DefaultJsonFormat(defaultJsonFormat)
-                       , wrappedJsonFormat, textJsonFormat)
+import Composite.Aeson (JsonFormat, defaultJsonFormatRec,recJsonFormat, toJsonWithFormat, DefaultJsonFormat(defaultJsonFormat), wrappedJsonFormat, textJsonFormat)
 import Composite.Aeson.TH (makeRecJsonWrapper)
 import Composite.Opaleye (defaultRecTable)
 import Composite.Record (Record, Rec(RNil), (:->), pattern (:*:))
 import Composite.TH (withOpticsAndProxies)
 import Control.Arrow (returnA)
+import Control.Exception (bracket)
 import Control.Lens (view, iso, makeWrapped)
 import Control.Lens.Wrapped 
---import Control.Lens.TH (makeWrapped)
-import Data.Int (Int64)
-import Data.Proxy (Proxy(Proxy))
-import Data.Text (Text)
-import Opaleye
-import Opaleye.Internal.TableMaker (ColumnMaker)
-import Data.String.Conversions (cs)
-import qualified Data.Aeson as Aeson
-import Data.Profunctor.Product.Default (Default(def))
+import Control.Monad.Base (liftBase)
+import Control.Monad.Logger (logInfo, LoggingT)
 import Control.Monad.Reader
 import Control.Monad.Trans.Control
+import qualified Data.Aeson as Aeson
 import Data.ByteString (ByteString)
-import Control.Exception (bracket)
-import Control.Monad.Base (liftBase)
-
--- | Db
+import Data.Functor.Identity (Identity)
+import Data.Int (Int64)
 import Data.Pool (Pool, withResource)
 import qualified Data.Pool as Pool
-import qualified Database.PostgreSQL.Simple as PGS -- used for printSql
-
--- | Web
-import Servant 
-import Network.Wai.Handler.Warp (run)
-
+import Data.Profunctor.Product.Default (Default(def))
+import Data.Proxy (Proxy(Proxy))
+import Data.String.Conversions (cs)
+import Data.Text (Text)
+import Data.Vinyl (RElem)
+import Data.Vinyl.TypeLevel (RIndex)
+import qualified Database.PostgreSQL.Simple as PGS
 import Debug.Trace (trace)
+import Network.Wai.Handler.Warp (run)
+import Opaleye
+import Opaleye.Internal.TableMaker (ColumnMaker)
+import Servant 
 
 
 --------------------------------------------------
@@ -116,13 +109,13 @@ withOpticsAndProxies [d|
 
 
 --------------------------------------------------
--- The Apps Monad Stack
+-- The App's Monad Stack
 --   Note: I had to move this here because TH stuff was goofing around
 
 -- | Lives in Reader, context for the whole app
 data AppData = AppData { appConnPool :: Pool PGS.Connection }
 
-type AppStackM = ReaderT AppData Handler
+type AppStackM = ReaderT AppData (LoggingT Handler)
 
 
 --------------------------------------------------
@@ -203,7 +196,7 @@ validatePassword clear hash = (hashPassword clear) == hash
 
 
 --------------------------------------------------
--- | Servant
+-- | Routes
 
 type LoginRoute = ReqBody '[JSON] ApiAuthAccount
                   :> Post '[JSON] ApiAccount
@@ -213,6 +206,8 @@ type LoginRoute = ReqBody '[JSON] ApiAuthAccount
 -- TODO: execute in Maybe monad
 loginRoute :: ApiAuthAccount -> AppStackM ApiAccount
 loginRoute apiAuthAccount = do
+  -- log attempt
+  
   let authAccount = (unApiAuthAccount apiAuthAccount)
       email = view fEmail authAccount
 
@@ -241,6 +236,10 @@ loginRoute apiAuthAccount = do
         False -> throwError err403 
   ret
 
+
+--------------------------------------------------
+-- | Api
+
 type Api = "login" :> LoginRoute
   
 api :: Proxy Api
@@ -264,6 +263,15 @@ withPostgresqlPool connStr nConns action = do
   restoreM stm
   where
     createPool = Pool.createPool (PGS.connectPostgreSQL connStr) PGS.close 1 20 nConns
+      
+appStackToHandler' :: forall a. AppData -> AppStackM a -> Handler a
+appStackToHandler' appData action = runReaderT action appData
+
+appStackToHandler :: AppData -> (AppStackM Servant.:~> Handler)
+appStackToHandler appData = Nat $ appStackToHandler' appData
+
+appServer :: AppData -> Server Api
+appServer appData = enter (appStackToHandler appData) service
 
 startApp :: IO ()
 startApp = do
@@ -271,15 +279,6 @@ startApp = do
     $ \connPool -> do
       let appData = AppData connPool
       run 8080 $ serve api (appServer appData)
-
-appServer :: AppData -> Server Api
-appServer appData = enter (appStackToHandler appData) service
-      
-appStackToHandler' :: forall a. AppData -> AppStackM a -> Handler a
-appStackToHandler' appData action = runReaderT action appData
-
-appStackToHandler :: AppData -> (AppStackM Servant.:~> Handler)
-appStackToHandler appData = Nat $ appStackToHandler' appData
 
 
 {-
